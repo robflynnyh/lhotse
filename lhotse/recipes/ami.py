@@ -1,5 +1,5 @@
 """
-The data preparation recipe for the AMI Meeting Corpus.
+The data preparation recipe for the AMI Meeting Corpus
 
 NOTE on data splits and references:
 
@@ -27,6 +27,7 @@ These can be specified using the `mic` argument.
 import html
 import itertools
 import logging
+from symtable import Symbol
 import urllib.request
 import xml.etree.ElementTree as ET
 import zipfile
@@ -36,6 +37,7 @@ from typing import Dict, List, NamedTuple, Optional, Union
 
 from tqdm.auto import tqdm
 
+from lhotse.supervision import AlignmentItem
 from lhotse import validate_recordings_and_supervisions
 from lhotse.audio import AudioSource, Recording, RecordingSet
 from lhotse.qa import fix_manifests
@@ -265,7 +267,8 @@ class AmiSegmentAnnotation(NamedTuple):
     speaker: str
     gender: str
     start_time: Seconds
-    end_time: Seconds
+    end_time: Seconds 
+    alignments: List[ AlignmentItem] = None 
 
 
 def parse_ami_annotations(
@@ -302,7 +305,7 @@ def parse_ami_annotations(
             for word in tree.getroot():
                 if word.tag != "w" or "punc" in word.attrib:
                     continue
-                wid_to_word[word.attrib["{http://nite.sourceforge.net/}id"]] = word.text
+                wid_to_word[word.attrib["{http://nite.sourceforge.net/}id"]] = {'word': word.text, 'start_time':word.get("starttime"), 'end_time':word.get("endtime")}
 
     def _parse_href(href, wid_to_word):
         # The href argument is originally a string of the form "ES2002b.B.words.xml#id(ES2002b.B.words0)..id(ES2002b.B.words4)".
@@ -311,15 +314,26 @@ def parse_ami_annotations(
         word_ids = href.split("..")
         word_ids = [x.split("(")[1].split(")")[0] for x in word_ids]
         if len(word_ids) == 1:
-            return wid_to_word[word_ids[0]] if word_ids[0] in wid_to_word else ""
+            if word_ids[0] in wid_to_word:
+                return [{'word': wid_to_word[word_ids[0]]['word'], 'start_time':wid_to_word[word_ids[0]]['start_time'], 'end_time':wid_to_word[word_ids[0]]['end_time']}]
+            else:
+                return [{'word': "", 'start_time':None, 'end_time':None}]
         start_id, end_id = word_ids[0], word_ids[1]
         meeting_stem, word_start = start_id.split("words")
         _, word_end = end_id.split("words")
-        return " ".join(
-            wid_to_word[f"{meeting_stem}words{i}"]
-            for i in range(int(word_start), int(word_end) + 1)
-            if f"{meeting_stem}words{i}" in wid_to_word
-        )
+
+        timings = [(wid_to_word[f"{meeting_stem}words{i}"]['start_time'], wid_to_word[f"{meeting_stem}words{i}"]['end_time']) for i in range(int(word_start), int(word_end) + 1) if f"{meeting_stem}words{i}" in wid_to_word]
+        words = [wid_to_word[f"{meeting_stem}words{i}"]['word'] for i in range(int(word_start), int(word_end) + 1) if f"{meeting_stem}words{i}" in wid_to_word]
+
+        wordtimings = [
+            {
+                'word': words[i],
+                'start_time': timings[i][0],
+                'end_time': timings[i][1],
+            }
+            for i in range(len(words))
+        ]
+        return wordtimings
 
     # Now iterate over all segments and create transcripts
     for file in (annotations_dir / "segments").iterdir():
@@ -344,44 +358,58 @@ def parse_ami_annotations(
                 assert len(seg) == 1, "Multiple child segments found"
                 seg_child = next(iter(seg))
                 if "href" in seg_child.attrib:
-                    text = _parse_href(seg_child.attrib["href"], wid_to_word)
-                    text = normalize_text(text, normalize)
-                if len(text) > 0:
+                    wordtimings = _parse_href(seg_child.attrib["href"], wid_to_word)
+                    if len(wordtimings) == 1: # if only one word, use the start and end time of segment as word timing may be missing
+                        wordtimings[0][0] = start_time
+                        wordtimings[0][1] = end_time
+
+                    wordtimings = normalize_text_with_timings(wordtimings, normalize)
+                    #text = normalize_text(text, normalize)
+                if len(wordtimings) > 0:
                     annotations[key].append(
                         AmiSegmentAnnotation(
-                            text=text,
+                            text=" ".join([x["word"].strip() for x in wordtimings]),
                             speaker=spk,
                             gender=spk[0],
                             start_time=start_time,
                             end_time=end_time,
+                            alignments=[
+                                AlignmentItem(symbol=el['word'], start=float(el['start_time']), duration=float(el['end_time']) - float(el['start_time']))
+                                if all(x is not None for x in [el['start_time'], el['end_time']]) else
+                                AlignmentItem(symbol=el['word'], start=None, duration=None)
+                                for i, el in enumerate(wordtimings)
+                            ]
                         )
                     )
 
     return annotations
 
 
-def normalize_text(text: str, normalize: str = "upper") -> str:
+def normalize_text(text: str, normalize: str = "upper") -> str: 
     if normalize == "none":
         return text
     elif normalize == "upper":
         return text.upper()
-    elif normalize == "kaldi":
+    elif normalize == "kaldi" or "kaldi-lower":
         # Kaldi style text normalization
         import re
-
         # convert text to uppercase
-        text = text.upper()
+        text = text.upper() if normalize == "kaldi" else text.lower()
         # remove punctuations
-        text = re.sub(r"[^A-Z0-9']+", " ", text)
+        text = re.sub(r"[^A-Z0-9']+", " ", text) if normalize == "kaldi" else re.sub(r"[^a-z0-9']+", " ", text)
         # remove multiple spaces
-        text = re.sub(r"\s+", " ", text)
+        text = re.sub(r"\s+", " ", text) 
         # apply few exception for dashed phrases, Mm-Hmm, Uh-Huh, OK etc. those are frequent in AMI
         # and will be added to dictionary
-        text = re.sub(r"MM HMM", "MM-HMM", text)
-        text = re.sub(r"UH HUH", "UH-HUH", text)
-        text = re.sub(r"(\b)O K(\b)", "\g<1>OK\g<2>", text)
+        text = re.sub(r"MM HMM", "MM-HMM", text) if normalize == "kaldi" else re.sub(r"mm hmm", "mm-hmm", text)
+        text = re.sub(r"UH HUH", "UH-HUH", text) if normalize == "kaldi" else re.sub(r"uh huh", "uh-huh", text)
+        text = re.sub(r"(\b)O K(\b)", "\g<1>OK\g<2>", text) if normalize == "kaldi" else re.sub(r"(\b)o k(\b)", "\g<1>ok\g<2>", text)
         return text
 
+def normalize_text_with_timings(text_timings:List[Dict[str, any]], normalize:str="kaldi-lower") -> List[Dict[str, any]]:
+    for i, el in enumerate(text_timings):
+        text_timings[i]['word'] = normalize_text(el['word'], normalize) 
+    return text_timings
 
 # IHM and MDM audio requires grouping multiple channels of AudioSource into
 # one Recording.
@@ -483,6 +511,7 @@ def prepare_supervision_ihm(
             # For each source, "channels" will always be a one-element list
             (channel,) = source.channels
             annotation = annotation_by_id_and_channel.get((recording.id, channel))
+         
             if annotation is None:
                 logging.warning(
                     f"No annotation found for recording {recording.id} "
@@ -501,6 +530,8 @@ def prepare_supervision_ihm(
                     )
                     continue
                 if duration > 0:
+                    alignments = [el for el in seg_info.alignments if el.duration != None]
+                    alignments = {'word':alignments} if len(alignments) > 0 else None
                     segments.append(
                         SupervisionSegment(
                             id=f"{recording.id}-{channel}-{seg_idx}",
@@ -512,6 +543,7 @@ def prepare_supervision_ihm(
                             speaker=seg_info.speaker,
                             gender=seg_info.gender,
                             text=seg_info.text,
+                            alignment=alignments
                         )
                     )
 
