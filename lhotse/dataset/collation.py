@@ -13,6 +13,7 @@ from lhotse.cut import Cut, MixedCut
 from lhotse.utils import DEFAULT_PADDING_VALUE
 
 
+
 class TokenCollater:
     """Collate list of tokens
 

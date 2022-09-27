@@ -401,10 +401,11 @@ def normalize_text(text: str, normalize: str = "upper") -> str:
         text = re.sub(r"\s+", " ", text) 
         # apply few exception for dashed phrases, Mm-Hmm, Uh-Huh, OK etc. those are frequent in AMI
         # and will be added to dictionary
-        text = re.sub(r"MM HMM", "MM-HMM", text) if normalize == "kaldi" else re.sub(r"mm hmm", "mm-hmm", text)
-        text = re.sub(r"UH HUH", "UH-HUH", text) if normalize == "kaldi" else re.sub(r"uh huh", "uh-huh", text)
+        text = re.sub(r"MM HMM", "MM-HMM", text) if normalize == "kaldi" else text
+        text = re.sub(r"UH HUH", "UH-HUH", text) if normalize == "kaldi" else text
         text = re.sub(r"(\b)O K(\b)", "\g<1>OK\g<2>", text) if normalize == "kaldi" else re.sub(r"(\b)o k(\b)", "\g<1>ok\g<2>", text)
-        return text
+
+        return text.strip()
 
 def normalize_text_with_timings(text_timings:List[Dict[str, any]], normalize:str="kaldi-lower") -> List[Dict[str, any]]:
     for i, el in enumerate(text_timings):
@@ -543,6 +544,10 @@ def prepare_supervision_ihm(
                             speaker=seg_info.speaker,
                             gender=seg_info.gender,
                             text=seg_info.text,
+                            custom={
+                                'segment_start':seg_info.start_time,   # otherwise lhotse discards global timings when recorings are cut to supervisions )':
+                                'segment_end':seg_info.start_time + duration, 
+                            },
                             alignment=alignments
                         )
                     )

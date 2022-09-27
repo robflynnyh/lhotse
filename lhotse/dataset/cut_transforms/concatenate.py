@@ -69,3 +69,18 @@ def concat_cuts(
         if not can_fit:
             break
     return CutSet.from_cuts(cuts)
+
+
+def plain_concat(cuts: Sequence[Cut], gap: Seconds = 1.0) -> CutSet:
+    """
+    A simple concatenation of cuts, maintaining original order.
+    """
+    if len(cuts) <= 1:
+        # Nothing to do.
+        return CutSet.from_cuts(cuts)
+ 
+    current = cuts[0]
+    for i in range(1, len(cuts)):
+        cut = cuts[i]
+        current = current.pad(current.duration + gap).append(cut)
+    return CutSet.from_cuts([current])
