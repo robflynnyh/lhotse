@@ -4,6 +4,8 @@ from lhotse import CutSet
 from lhotse.cut import Cut
 from lhotse.utils import Seconds
 
+def isfalse(val):
+    return val == False
 
 class CutConcatenate:
     """
@@ -71,16 +73,40 @@ def concat_cuts(
     return CutSet.from_cuts(cuts)
 
 
-def plain_concat(cuts: Sequence[Cut], gap: Seconds = 1.0) -> CutSet:
+def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.5, max_duration=None, seperate_speakers=False, concat_cuts=True) -> CutSet:
     """
     A simple concatenation of cuts, maintaining original order.
+    cuts: a lhotse sequence of cuts
+    gap: the duration of silence inserted between concatenated cuts.
+    max_duration: the maximum duration of the concatenated cut (seconds). If None, no limit is applied.
+    seperate_speakers: whether to include seperate speakers in the same utterance, pass list of speakers to seperate
+    concat_cuts: whether to concatenate cuts or just join into individual cutsets and return a list of cutsets
     """
     if len(cuts) <= 1:
         # Nothing to do.
         return CutSet.from_cuts(cuts)
+    assert isfalse(seperate_speakers) or seperate_speakers.__class__.__name__ == 'list', "seperate_speakers must be a list of speakers to seperate" 
  
-    current = cuts[0]
+    max_duration = max_duration if max_duration is not None else float('inf')
+    gap = gap if concat_cuts else 0.0 # no gap if not concatenating
+
+    cutlist = [cuts[0]] if concat_cuts else [[cuts[0]]]
+    prev_speaker = None if isfalse(seperate_speakers) else seperate_speakers[0]
+    cur_duration = cuts[0].duration 
+
     for i in range(1, len(cuts)):
         cut = cuts[i]
-        current = current.pad(current.duration + gap).append(cut)
-    return CutSet.from_cuts([current])
+        cur_speaker = None if isfalse(seperate_speakers) else seperate_speakers[i]
+
+        if cur_speaker == prev_speaker and (cur_duration + gap + cut.duration) <= max_duration:
+            cutlist[-1] = cutlist[-1].pad(cutlist[-1].duration + gap).append(cut) if concat_cuts else cutlist[-1] + [cut]
+            cur_duration += gap + cut.duration
+        else:
+            cutlist.append(cut if concat_cuts else [cut])
+            cur_duration = cut.duration
+
+        prev_speaker = cur_speaker
+
+    return [CutSet.from_cuts([cut] if concat_cuts else cut) for cut in cutlist]
+
+
