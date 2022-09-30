@@ -101,7 +101,7 @@ def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, max_duration=None, sep
         cut = cuts[i]
         cur_speaker = None if isfalse(seperate_speakers) else seperate_speakers[i]
 
-        cur_gap = 0 if isfalse(concat_cuts) else (gap if prev_speaker == cur_speaker else gap+speaker_seperation_gap)
+        cur_gap = gap if prev_speaker == cur_speaker or isfalse(seperate_speakers) or isfalse(concat_cuts) else gap+speaker_seperation_gap
 
         if cur_speaker == prev_speaker and (cur_duration + cur_gap + cut.duration) <= max_duration:
             cutlist[-1] = cutlist[-1].pad(cutlist[-1].duration + cur_gap).append(cut) if concat_cuts else cutlist[-1] + [cut]
