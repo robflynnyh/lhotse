@@ -6,9 +6,6 @@ from lhotse.utils import Seconds
 
 def isfalse(val):
     return val == False
-def istrue(val):
-    return val == True
-
 
 class CutConcatenate:
     """
@@ -76,7 +73,7 @@ def concat_cuts(
     return CutSet.from_cuts(cuts)
 
 
-def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, max_duration=None, seperate_speakers=False, concat_cuts=True, speaker_seperation_gap=0.9) -> CutSet:
+def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.5, max_duration=None, seperate_speakers=False, concat_cuts=True, speaker_gap=0) -> CutSet:
     """
     A simple concatenation of cuts, maintaining original order.
     cuts: a lhotse sequence of cuts
@@ -101,11 +98,9 @@ def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, max_duration=None, sep
         cut = cuts[i]
         cur_speaker = None if isfalse(seperate_speakers) else seperate_speakers[i]
 
-        cur_gap = gap if prev_speaker == cur_speaker or isfalse(seperate_speakers) or isfalse(concat_cuts) else gap+speaker_seperation_gap
-
-        if cur_speaker == prev_speaker and (cur_duration + cur_gap + cut.duration) <= max_duration:
-            cutlist[-1] = cutlist[-1].pad(cutlist[-1].duration + cur_gap).append(cut) if concat_cuts else cutlist[-1] + [cut]
-            cur_duration += cur_gap + cut.duration
+        if cur_speaker == prev_speaker and (cur_duration + gap + cut.duration) <= max_duration:
+            cutlist[-1] = cutlist[-1].pad(cutlist[-1].duration + gap).append(cut) if concat_cuts else cutlist[-1] + [cut]
+            cur_duration += gap + cut.duration
         else:
             cutlist.append(cut if concat_cuts else [cut])
             cur_duration = cut.duration
@@ -113,7 +108,5 @@ def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, max_duration=None, sep
         prev_speaker = cur_speaker
 
     return [CutSet.from_cuts([cut] if concat_cuts else cut) for cut in cutlist]
-
-
 
 
