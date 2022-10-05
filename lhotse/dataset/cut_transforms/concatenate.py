@@ -1,4 +1,4 @@
-from typing import Optional, Sequence
+from typing import List, Optional, Sequence
 
 from lhotse import CutSet
 from lhotse.cut import Cut
@@ -72,8 +72,64 @@ def concat_cuts(
             break
     return CutSet.from_cuts(cuts)
 
+def individual_speaker_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, speaker_gap: Seconds=1.0, speaker_list:List[str]=[], max_duration=None, concat_cuts=True):
+    '''
+    Conatenate cuts, speakers are joined into a single sample up to max duration, if there is a gap with another speaker present silence of speaker_gap is added
+    cuts: a lhotse sequence of cuts
+    gap: the duration of silence inserted between adjacent concatenated cuts
+    speaker_gap: the silence duration inserted between concatenated cuts when there was a speaker change
+    speaker_list: list of speakers for each cut sample in the cut sequence
+    max_duration: the maximum duration of the concatenated cut (seconds). If None, no limit is applied.
+    concat_cuts: whether to concatenate cuts or just join into individual cutsets and return a list of cutsets
+    '''
+    if len(cuts) <= 1:
+        # Nothing to do.
+        return CutSet.from_cuts(cuts)
+    assert len(cuts) == len(speaker_list), "speaker list must be same length as cuts"
+    max_duration = max_duration if max_duration is not None else float('inf')
+    gap, speaker_gap = (gap, speaker_gap) if concat_cuts else (0.0, 0.0)
 
-def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.5, max_duration=None, seperate_speakers=False, concat_cuts=True, speaker_gap=0) -> CutSet:
+    cutdata = {}
+    cutdata['prev_speaker'] = speaker_list[0]
+
+    cutdata[cutdata['prev_speaker']] = {
+        'cuts':[cuts[0]] if concat_cuts else [[cuts[0]]],
+        'cur_duration':cuts[0].duration,
+    }
+
+    for idx in range(1, len(cuts)):
+        cut = cuts[idx]
+        speaker = speaker_list[idx]
+        gapsize = gap if speaker == cutdata['prev_speaker'] else speaker_gap
+
+        if speaker not in cutdata:
+            cutdata[speaker] = {
+                'cuts':[cut] if concat_cuts else [[cut]],
+                'cur_duration':cut.duration,
+            }
+        elif (cutdata[speaker]['cur_duration'] + cut.duration + gapsize) <= max_duration:
+            cutdata[speaker]['cuts'][-1] = cutdata[speaker]['cuts'][-1].pad(cutdata[speaker]['cuts'][-1].duration + gapsize).append(cut) \
+                if concat_cuts else cutdata[speaker]['cuts'][-1] + [cut]
+            cutdata[speaker]['cur_duration'] += cut.duration + gapsize
+        else:
+            cutdata[speaker]['cuts'].append(cut) if concat_cuts else cutdata[speaker]['cuts'].append([cut])
+            cutdata[speaker]['cur_duration'] = cut.duration
+        cutdata['prev_speaker'] = speaker
+
+    #return cutdata
+    
+    all_cuts = []
+    for speaker in cutdata:
+        if speaker == 'prev_speaker':
+            continue
+        all_cuts += cutdata[speaker]['cuts']
+    
+    return [CutSet.from_cuts([cut] if concat_cuts else cut) for cut in all_cuts]
+           
+
+    
+
+def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, max_duration=None, seperate_speakers=False, concat_cuts=True, speaker_list:List[str]=[]) -> CutSet:
     """
     A simple concatenation of cuts, maintaining original order.
     cuts: a lhotse sequence of cuts
@@ -85,18 +141,18 @@ def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.5, max_duration=None, sep
     if len(cuts) <= 1:
         # Nothing to do.
         return CutSet.from_cuts(cuts)
-    assert isfalse(seperate_speakers) or seperate_speakers.__class__.__name__ == 'list', "seperate_speakers must be a list of speakers to seperate" 
+    assert isfalse(seperate_speakers) or speaker_list.__class__.__name__ == 'list' and len(speaker_list) > 0, "seperate_speakers must be a list of speakers to seperate" 
  
     max_duration = max_duration if max_duration is not None else float('inf')
     gap = gap if concat_cuts else 0.0 # no gap if not concatenating
 
     cutlist = [cuts[0]] if concat_cuts else [[cuts[0]]]
-    prev_speaker = None if isfalse(seperate_speakers) else seperate_speakers[0]
+    prev_speaker = None if isfalse(seperate_speakers) else speaker_list[0]
     cur_duration = cuts[0].duration 
 
     for i in range(1, len(cuts)):
         cut = cuts[i]
-        cur_speaker = None if isfalse(seperate_speakers) else seperate_speakers[i]
+        cur_speaker = None if isfalse(seperate_speakers) else speaker_list[i]
 
         if cur_speaker == prev_speaker and (cur_duration + gap + cut.duration) <= max_duration:
             cutlist[-1] = cutlist[-1].pad(cutlist[-1].duration + gap).append(cut) if concat_cuts else cutlist[-1] + [cut]

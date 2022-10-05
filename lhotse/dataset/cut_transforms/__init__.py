@@ -1,4 +1,4 @@
-from .concatenate import CutConcatenate, concat_cuts, plain_concat
+from .concatenate import CutConcatenate, concat_cuts, plain_concat, individual_speaker_concat
 from .extra_padding import ExtraPadding
 from .mix import CutMix
 from .perturb_speed import PerturbSpeed
