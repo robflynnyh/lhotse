@@ -46,6 +46,10 @@ import shutil
 import tarfile
 from pathlib import Path
 from typing import Dict, Optional, Union
+from lhotse import CutSet, Fbank
+import os
+
+from tqdm import tqdm
 
 from lhotse import (
     Recording,
@@ -99,7 +103,7 @@ def prepare_tedlium(
     for split in ("train", "dev", "test"):
         root = tedlium_root / "legacy" / split
         recordings = RecordingSet.from_recordings(
-            Recording.from_file(p) for p in (root / "sph").glob("*.sph")
+            Recording.from_file(p) for p in tqdm((root / "sph").glob("*.sph"), desc=f"Loading {split} recordings")
         )
         stms = list((root / "stm").glob("*.stm"))
         assert len(stms) == len(recordings), (
@@ -108,11 +112,12 @@ def prepare_tedlium(
             f"You might be missing some parts of TEDLIUM..."
         )
         segments = []
-        for p in stms:
+        for p in tqdm(stms, desc=f"Loading {split} supervisions"):
             with p.open() as f:
                 for idx, l in enumerate(f):
                     rec_id, _, _, start, end, _, *words = l.split()
                     start, end = float(start), float(end)
+                    duration = round(end - start, ndigits=8)
                     text = " ".join(words).replace("{NOISE}", "[NOISE]")
                     if text == "ignore_time_segment_in_scoring":
                         continue
@@ -121,11 +126,15 @@ def prepare_tedlium(
                             id=f"{rec_id}-{idx}",
                             recording_id=rec_id,
                             start=start,
-                            duration=round(end - start, ndigits=8),
+                            duration=duration,
                             channel=0,
                             text=text,
                             language="English",
                             speaker=rec_id,
+                            custom={
+                                'segment_start': start,
+                                'segment_end': end,
+                            }
                         )
                     )
         supervisions = SupervisionSet.from_segments(segments)
@@ -138,3 +147,31 @@ def prepare_tedlium(
             supervisions.to_file(output_dir / f"tedlium_supervisions_{split}.jsonl.gz")
 
     return corpus
+
+
+
+def prepare_and_save(tedlium_root: Pathlike, output_dir: Optional[Pathlike] = None):
+    tedlium_root = Path(tedlium_root)
+    output_dir = Path(output_dir) if output_dir is not None else None
+    corpus = prepare_tedlium(tedlium_root, output_dir)
+    ted_cuts = {}
+
+    if os.path.isdir(output_dir / "wavs") == False:
+        os.mkdir(output_dir / "wavs")
+    for split in ['train', 'dev', 'test']:
+        if os.path.isdir(output_dir / "wavs" / split) == False:
+            os.mkdir(output_dir / "wavs" / split)
+
+    for split in ['train', 'test', 'dev']:
+        ted_cuts[split] = CutSet.from_manifests(**corpus[split])
+        ted_cuts[split] = ted_cuts[split].trim_to_supervisions()
+        ted_cuts[split].to_file(output_dir / f"tedlium_cuts_{split}.jsonl.gz")
+        ted_cuts[split] = CutSet.from_file(output_dir / f"tedlium_cuts_{split}.jsonl.gz")
+        print(f'{split} cuts: {len(ted_cuts[split])}')
+        print("Saving wavs...")
+        ted_cuts[split] = ted_cuts[split].save_audios(storage_path=output_dir / "wavs" / split)
+        print(f'Wavs saved in {output_dir / "wavs" / split}')
+        ted_cuts[split].to_file(output_dir / f"tedlium_cuts_{split}.jsonl.gz")
+
+
+    print(f'Audio saved in {output_dir / "wavs"}')

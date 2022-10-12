@@ -84,7 +84,7 @@ def individual_speaker_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, speaker_g
     '''
     if len(cuts) <= 1:
         # Nothing to do.
-        return CutSet.from_cuts(cuts)
+        return [CutSet.from_cuts(cuts)]
     assert len(cuts) == len(speaker_list), "speaker list must be same length as cuts"
     max_duration = max_duration if max_duration is not None else float('inf')
     gap, speaker_gap = (gap, speaker_gap) if concat_cuts else (0.0, 0.0)
@@ -140,7 +140,7 @@ def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, max_duration=None, sep
     """
     if len(cuts) <= 1:
         # Nothing to do.
-        return CutSet.from_cuts(cuts)
+        return [CutSet.from_cuts(cuts)]
     assert isfalse(seperate_speakers) or speaker_list.__class__.__name__ == 'list' and len(speaker_list) > 0, "seperate_speakers must be a list of speakers to seperate" 
  
     max_duration = max_duration if max_duration is not None else float('inf')
