@@ -129,7 +129,15 @@ def individual_speaker_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, speaker_g
 
     
 
-def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, max_duration=None, seperate_speakers=False, concat_cuts=True, speaker_list:List[str]=[]) -> CutSet:
+def plain_concat(
+        cuts: Sequence[Cut], 
+        gap: Seconds = 0.1, 
+        max_duration=None, 
+        seperate_speakers=False, 
+        concat_cuts=True, 
+        speaker_list:List[str]=[],
+        max_allowed_utterance_gap:Seconds=-1.0,
+    ) -> CutSet:
     """
     A simple concatenation of cuts, maintaining original order.
     cuts: a lhotse sequence of cuts
@@ -137,24 +145,33 @@ def plain_concat(cuts: Sequence[Cut], gap: Seconds = 0.1, max_duration=None, sep
     max_duration: the maximum duration of the concatenated cut (seconds). If None, no limit is applied.
     seperate_speakers: whether to include seperate speakers in the same utterance, pass list of speakers to seperate
     concat_cuts: whether to concatenate cuts or just join into individual cutsets and return a list of cutsets
+    max_allowed_utterance_gap: the maximum allowed gap between utterances in a single speaker utterance -1.0 means no limit
     """
     if len(cuts) <= 1:
         # Nothing to do.
         return [CutSet.from_cuts(cuts)]
     assert isfalse(seperate_speakers) or speaker_list.__class__.__name__ == 'list' and len(speaker_list) > 0, "seperate_speakers must be a list of speakers to seperate" 
- 
+   
+    max_allowed_utterance_gap = max_allowed_utterance_gap if max_allowed_utterance_gap > 0.0 else float('inf')
+
     max_duration = max_duration if max_duration is not None else float('inf')
     gap = gap if concat_cuts else 0.0 # no gap if not concatenating
 
     cutlist = [cuts[0]] if concat_cuts else [[cuts[0]]]
     prev_speaker = None if isfalse(seperate_speakers) else speaker_list[0]
     cur_duration = cuts[0].duration 
-
+   
     for i in range(1, len(cuts)):
         cut = cuts[i]
+        cut_start = cut.supervisions[0].custom['segment_start']
+        prev_cut_end = cutlist[-1].supervisions[0].custom['segment_end'] if concat_cuts else cutlist[-1][-1].supervisions[0].custom['segment_end']
+        cut_gap = cut_start - prev_cut_end
+
+        keep_seperate = True if cut_gap > max_allowed_utterance_gap else False
+        
         cur_speaker = None if isfalse(seperate_speakers) else speaker_list[i]
 
-        if cur_speaker == prev_speaker and (cur_duration + gap + cut.duration) <= max_duration:
+        if cur_speaker == prev_speaker and (cur_duration + gap + cut.duration) <= max_duration and isfalse(keep_seperate):
             cutlist[-1] = cutlist[-1].pad(cutlist[-1].duration + gap).append(cut) if concat_cuts else cutlist[-1] + [cut]
             cur_duration += gap + cut.duration
         else:
