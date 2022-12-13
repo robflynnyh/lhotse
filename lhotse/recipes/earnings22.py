@@ -22,25 +22,126 @@ About the Earnings 22 dataset:
 
 """
 
-
+from tqdm import tqdm
 import logging
 import string
 from pathlib import Path
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Union, Any
+import os
 
 from lhotse import validate_recordings_and_supervisions
 from lhotse.audio import Recording, RecordingSet
 from lhotse.supervision import SupervisionSegment, SupervisionSet
 from lhotse.utils import Pathlike
+import pandas as pd
+import re
+from lhotse import CutSet   
+from lhotse.cut import MonoCut
 
 _DEFAULT_URL = "https://github.com/revdotcom/speech-datasets"
 
-
+'''
 def normalize(text: str) -> str:
     # Remove all punctuation
     text = text.translate(str.maketrans("", "", string.punctuation))
     # Convert all upper case to lower case
     text = text.lower()
+    return text
+''' # I want to keep apostrophes
+
+possible_denominations = ['million', 'thousand', 'billion', 'trillion', 'hundred', 'hundred thousand', 'ten thousand', '']
+#possible_money_tokens = ["$","£",""]
+money_fns = {
+    '$': 'dollars',
+    '£': 'pounds',
+    '€': 'euros',
+    '¥': 'yen',
+    '₹': 'rupees',
+    '₩': 'won',
+    ' GH ': ' ghanacedis ', # replace ghanacedis with ghana cedis afterwards lol (makes the regex easier)
+    'GH¢': 'ghanacedis',
+}
+
+def monetary_tokens(currency_token:str, replacement_string:str, text:str):
+    '''
+    Example usage:
+    text = monetary_tokens('$', 'dollars', 'I have $100 million')
+    output = 'I have 100 million dollars'
+    too dumb for fancy regex so this will do lmao
+    '''
+    # first replace the currency token with the replacement string
+    text = text.replace(currency_token, replacement_string + ' ')
+    stext = text.split()
+    # now loop through the text and carry the replacement string forward
+    ops = []
+    replacement_string = replacement_string.strip() # remove any whitespace
+    for i, word in enumerate(stext):
+        if word == replacement_string:
+            ops.append({'from':i})
+            to = i
+            if i+1 < len(stext) and stext[i+1].isdigit():
+                to = i+1
+            if i+2 < len(stext) and stext[i+2] in possible_denominations:
+                to = i+2
+            ops[-1]['to'] = to
+    # now loop through the ops and replace the tokens
+    for op in ops:
+        tomove = stext[op['from']]
+        stext[op['from']] = ''
+        stext[op['to']] = stext[op['to']] + ' ' + tomove
+    return ' '.join(stext).strip()
+    
+
+def edge_cases(text: str):
+    text = text.replace("&", " and ")
+    text = text.replace("%", " percent ")
+    text = text.replace(" ,", ",")
+    text = text.replace('*', 'star')
+    text = text.replace(',', '')
+    return text
+
+def convert_money_tokens(text: str):
+    for token, replacement in money_fns.items():
+        text = monetary_tokens(token, replacement, text)
+    return text
+    
+earnings_junk_tokens = ["<noise>", "<crosstalk>", "<affirmative>", "<inaudible>", "inaudible", "<laugh>", "<silence>"]
+
+def remove_junk_tokens(text: str):
+    for token in earnings_junk_tokens:
+        text = text.replace(token, "")
+    return text
+
+def normalize(text: str) -> str:
+    '''
+    accounts for:
+    - percentage signs
+    - Numbers
+    '''
+    import number_conversion # https://github.com/robflynnyh/number_conversion
+    # lower
+    # seperate GH\d from digits i.e GH100 -> GH 100 (exists as a monetary token) but GH is also sometimes used as a prefix i.e GHG
+    text = re.sub(r"GH(\d)", r"GH \1", text)
+    text = remove_junk_tokens(text)
+    text = text.lower()
+    # account for edge case
+
+    text = edge_cases(text)
+
+    # monetary tokens
+    text = convert_money_tokens(text)
+    # we want to keep unknown tokens so add some identifier that won't get removed by the regex
+    text = text.replace("<unk>", "unkunkunk")
+    # convert numbers to words
+    text = number_conversion.convert_doc(text)
+    # remove everything except letters and apostrophes
+    text = re.sub(r"[^a-z']", " ", text)
+    # add back the unk token
+    text = text.replace("unkunkunk", "<unk>")
+    # remove extra spaces
+    text = re.sub(r"\s+", " ", text)
+    # remove leading and trailing spaces
+    text = text.strip()
     return text
 
 
@@ -86,11 +187,176 @@ def parse_nlp_file(filename: Pathlike):
             transcript.append(line[0])
         return transcript
 
+def get_empty_field_dict():
+    return {
+        'token': [],
+        'speaker': [],
+        'start': [],
+        'end': [],
+    }
+
+def parse_nlp_fields(filename: Pathlike):
+    fields = {
+        'token': [],
+        'speaker': [],
+        'start': [],
+        'end': [],
+    }
+    with open(filename) as f:
+        f.readline()  # skip header
+        for line in f:
+            line = line.split("|")
+            fields['token'].append(line[0])
+            fields['speaker'].append(line[1])
+            if line[2].strip() == '' or line[3].strip() == '':
+                return False # return early if there are empty fields as we won't use this file
+            fields['start'].append(float(line[2]))
+            fields['end'].append(float(line[3]))
+        return fields
+
+def split_on_timings(fields: Dict[str, List[Any]], max_duration: float):
+    """
+    Split the fields on the timings. We will also split on the speaker change
+    """
+    utterances = [get_empty_field_dict()]
+    cur_duration = 0
+    prev_speaker = None
+    for i in range(len(fields['token'])):
+        duration = fields['end'][i] - fields['start'][i]
+        prev_speaker = fields['speaker'][i] if prev_speaker is None else prev_speaker
+        if cur_duration + duration > max_duration or prev_speaker != fields['speaker'][i]:
+            utterances.append(get_empty_field_dict())
+            cur_duration = 0
+        utterances[-1]['token'].append(fields['token'][i])
+        utterances[-1]['speaker'].append(fields['speaker'][i])
+        utterances[-1]['start'].append(fields['start'][i])
+        utterances[-1]['end'].append(fields['end'][i])
+        cur_duration += duration
+        prev_speaker = fields['speaker'][i]
+    return utterances
+
+def segments_to_supervisions(
+    segments: List[Dict[str, List[Any]]],
+    language: str,
+    id: str,
+    normalize_text: bool = True,
+    ) -> List[SupervisionSegment]:
+    """
+    Convert List of utterances to List of Supervision Segments
+    """
+    out = []
+    for i, utterance in enumerate(segments):
+        text = " ".join(utterance['token'])
+        if normalize_text:
+            text = normalize(text)
+        out.append(
+            SupervisionSegment(
+                id=f"{id}-{i}",
+                recording_id=id,
+                start=utterance['start'][0],
+                duration=utterance['end'][-1] - utterance['start'][0],
+                channel=0,
+                language=language,
+                speaker=utterance['speaker'][0],
+                text=text,
+                custom={ # otherwise lhotse discards timings after recordings are cut
+                    'segment_start': utterance['start'][0],
+                    'segment_end': utterance['end'][-1],
+                },
+            )
+        )
+    return out
+
+
 
 def prepare_earnings22(
+    split: str,
+    df_path: Pathlike,
+    data_dir: Pathlike,
+    output_dir: Optional[Pathlike] = None,
+    normalize_text: bool = True,
+) -> Union[RecordingSet, SupervisionSet]:
+    '''
+    df_path: path to the csv linking the wav files to their transcripts
+    data: path to the directory containing the wav files 
+    normalize_text: whether to normalize the text or not (see fn)
+    '''
+    df = pd.read_csv(df_path)
+    startf, endf = 'start_ts', 'end_ts'
+    textf = 'sentence'
+    filef = 'file'
+    sourcef = 'source_id'
+    output_dir = Path(output_dir) if output_dir is not None else Path(data_dir)
+    data_dir = Path(data_dir)
+  
+    
+
+    
+    cuts = []
+    for _, row in tqdm(df.iterrows(), total=len(df)):
+        text, start, end = row[textf], row[startf], row[endf]
+
+        f = data_dir / row[filef]
+        r = Recording.from_file(f)
+        r.id = f.parent.name + '-' + f.stem
+
+        
+        id, recording_id = r.id, r.id
+        if normalize_text:
+            text = normalize(text)
+
+        supervision = SupervisionSegment(
+                id=id,
+                recording_id=recording_id,
+                start=0,
+                duration=end - start,
+                channel=0,
+                language='en',
+                speaker='speaker',
+                text=text,
+                custom={ # otherwise lhotse discards timings after recordings are cut
+                    'segment_start': start,
+                    'segment_end': end,
+                    'parent_id': row[sourcef]
+                },
+            )
+        
+        cut = MonoCut(
+            id=r.id,
+            start=0,
+            duration=r.duration,
+            channel=0,
+            recording=r,
+            supervisions=[supervision],
+        )
+        cuts.append(cut)
+
+        
+    cuts = CutSet.from_cuts(cuts)    
+
+    print(f'Found {len(cuts)} cuts')
+
+    if output_dir is not None:
+        if os.path.exists(output_dir / split) is False:
+            os.mkdir(output_dir / split)
+        cuts.to_file(output_dir / f'earnings22_cuts_{split}.json.gz')
+        # load the cuts
+        cuts = CutSet.from_file(output_dir / f'earnings22_cuts_{split}.json.gz')
+        print(f'Saved cuts')
+        print(f'Number of cuts: {len(cuts)}')
+
+        print(f'Writing utterances to {output_dir / split}')
+        cuts = cuts.save_audios(storage_path=output_dir / split)
+        # resave the cuts
+        cuts.to_file(output_dir / f'earnings22_cuts_{split}.json.gz')
+    print('OKAY BYE')
+
+
+def __prepare_earnings22(
     corpus_dir: Pathlike,
     output_dir: Optional[Pathlike] = None,
     normalize_text: bool = False,
+    max_utterance_duration: float = 12.0
 ) -> Union[RecordingSet, SupervisionSet]:
     """
     Returns the manifests which consist of the Recordings and Supervisions.
@@ -135,22 +401,30 @@ def prepare_earnings22(
 
     nlp_files.sort()
     supervision_segments = list()
+    skipped = 0
     for nlp_file in nlp_files:
         id = nlp_file.stem
-        text = " ".join(parse_nlp_file(nlp_file))
+        #text = " ".join(parse_nlp_file(nlp_file))
+        fields = parse_nlp_fields(nlp_file)
+        # check all the fields are the same length
+        if fields is False:
+            logging.warning(f"Skipping {id} as it has inconsistent fields (we need timings)")
+            skipped += 1
+            continue
+
         if normalize_text:
             text = normalize(text)
 
-        s = SupervisionSegment(
-            id=id,
-            recording_id=id,
-            start=0.0,
-            duration=recording_set[id].duration,  # recording.duration,
-            channel=0,
+        recording_supervisions = segments_to_supervisions(
+            segments = split_on_timings(fields=fields, max_duration=max_utterance_duration),
             language=f"English-{metadata[id][4]}",
-            text=text,
+            id=id,
+            normalize_text=normalize_text,
         )
-        supervision_segments.append(s)
+        supervision_segments.extend(recording_supervisions)
+    print(len(nlp_files))
+    logging.warning(f"Skipped {skipped / len(nlp_files) * 100:.2f}% of the files due to missing timings")
+
     supervision_set = SupervisionSet.from_segments(supervision_segments)
 
     validate_recordings_and_supervisions(recording_set, supervision_set)

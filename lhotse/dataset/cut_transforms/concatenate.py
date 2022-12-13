@@ -164,19 +164,21 @@ def plain_concat(
     for i in range(1, len(cuts)):
         cut = cuts[i]
         cut_start = cut.supervisions[0].custom['segment_start']
-        prev_cut_end = cutlist[-1].supervisions[0].custom['segment_end'] if concat_cuts else cutlist[-1][-1].supervisions[0].custom['segment_end']
+        prev_cut_end = cutlist[-1].supervisions[-1].custom['segment_end'] if concat_cuts else cutlist[-1][-1].supervisions[0].custom['segment_end']
         cut_gap = cut_start - prev_cut_end
+      
 
         keep_seperate = True if cut_gap > max_allowed_utterance_gap else False
         
         cur_speaker = None if isfalse(seperate_speakers) else speaker_list[i]
-
+        
         if cur_speaker == prev_speaker and (cur_duration + gap + cut.duration) <= max_duration and isfalse(keep_seperate):
             cutlist[-1] = cutlist[-1].pad(cutlist[-1].duration + gap).append(cut) if concat_cuts else cutlist[-1] + [cut]
             cur_duration += gap + cut.duration
         else:
             cutlist.append(cut if concat_cuts else [cut])
             cur_duration = cut.duration
+     
 
         prev_speaker = cur_speaker
 
