@@ -158,7 +158,7 @@ def plain_concat(
 
     max_duration = max_duration if max_duration is not None else float('inf')
     gap = gap if concat_cuts else 0.0 # no gap if not concatenating
-
+    
     cutlist = [cuts[0]] if concat_cuts else [[cuts[0]]]
     prev_speaker = None if isfalse(seperate_speakers) else speaker_list[0]
     cur_duration = cuts[0].duration  # current duration of the cut
